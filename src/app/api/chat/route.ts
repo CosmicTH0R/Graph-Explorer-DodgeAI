@@ -5,24 +5,29 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 const DB_SCHEMA = `
-Nodes:
-- Customer (id)
-- SalesOrder (id)
-- DeliveryDocument (id)
-- BillingDocument (id)
-- JournalEntry (id)
-- Product (id)
+Node Labels and Key Properties:
+- Customer         (id)                      — a buyer/sold-to party
+- SalesOrder       (id, totalNetAmount, overallDeliveryStatus, soldToParty, creationDate)
+- DeliveryDocument (id, overallGoodsMovementStatus, shippingPoint)
+- BillingDocument  (id, totalNetAmount, billingDocumentType, billingDocumentDate, billingDocumentIsCancelled, soldToParty, accountingDocument)
+- JournalEntry     (id, accountingDocumentType, postingDate, glAccount, amountInTransactionCurrency)
+- Product          (id)                      — a material/product (id = material number)
 
-Relationships:
+Relationships (direction matters):
 - (Customer)-[:PLACES]->(SalesOrder)
 - (SalesOrder)-[:GENERATES]->(DeliveryDocument)
 - (DeliveryDocument)-[:BILLED_IN]->(BillingDocument)
 - (Customer)-[:BILLED_TO]->(BillingDocument)
 - (BillingDocument)-[:ACCOUNTED_IN]->(JournalEntry)
 - (SalesOrder)-[:CONTAINS_ITEM]->(Product)
-- (DeliveryDocument)-[:CONTAINS_ITEM]->(Product)
 - (BillingDocument)-[:CONTAINS_ITEM]->(Product)
+
+Important query patterns:
+- To find top products by billing count: MATCH (b:BillingDocument)-[:CONTAINS_ITEM]->(p:Product) WITH p, COUNT(DISTINCT b) AS cnt ORDER BY cnt DESC RETURN p.id, cnt LIMIT 10
+- To trace a billing document full flow: MATCH (bd:BillingDocument {id: 'X'}) OPTIONAL MATCH (c:Customer)-[:BILLED_TO]->(bd) OPTIONAL MATCH (bd)-[:ACCOUNTED_IN]->(je:JournalEntry) OPTIONAL MATCH (dd:DeliveryDocument)-[:BILLED_IN]->(bd) OPTIONAL MATCH (so:SalesOrder)-[:GENERATES]->(dd) RETURN bd, c, je, dd, so
+- To find sales orders delivered but not billed: MATCH (so:SalesOrder)-[:GENERATES]->(dd:DeliveryDocument) WHERE NOT (dd)-[:BILLED_IN]->(:BillingDocument) RETURN so, dd LIMIT 50
 `;
+
 
 async function geminiChat(prompt: string, model: string = 'gemini-2.5-flash', temperature = 0) {
   const chat = genAI.getGenerativeModel({ model });
@@ -45,7 +50,18 @@ export async function POST(req: Request) {
     }
 
     // 2. TEXT-TO-CYPHER GENERATION
-    const cypherPrompt = `You are a Neo4j Cypher expert. Convert the user's natural language question into a valid Cypher query based on this schema:\n${DB_SCHEMA}\nRULES:\n- Output ONLY the raw Cypher query.\n- Do not use markdown blocks (like \`\`\`cypher).\n- Do not explain the query.\n- Ensure you use MATCH and RETURN statements correctly.\n- To trace a full flow, return the paths. LIMIT results to 50 for performance.\nUser: ${message}`;
+    const cypherPrompt = `You are a Neo4j Cypher expert. Convert the user's natural language question into a valid Cypher query based on this schema:
+${DB_SCHEMA}
+RULES:
+- Output ONLY the raw Cypher query. No markdown, no explanation.
+- All node IDs are stored as the string property "id" (e.g., \`{id: '90504274'}\`).
+- For aggregation/ranking queries: use WITH, COUNT(DISTINCT ...), ORDER BY, LIMIT.
+- For "not billed" or "not delivered" queries: use WHERE NOT (...)-[:REL]->(:Label) pattern.
+- For tracing a full document flow: use OPTIONAL MATCH to find all connected nodes.
+- For path tracing, RETURN individual nodes/relationships (not just RETURN path) so the frontend can render them.
+- LIMIT results to 50 unless the query requires more.
+- Do not use apoc procedures.
+User: ${message}`;
     let cypherQuery = await geminiChat(cypherPrompt, 'gemini-2.5-flash', 0);
     cypherQuery = cypherQuery.replace(/```cypher/gi, '').replace(/```/g, '').trim();
 
