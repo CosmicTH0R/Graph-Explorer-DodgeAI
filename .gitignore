@@ -1,0 +1,23 @@
+# Ignore Python virtual environments
+venv/
+.env
+__pycache__/
+*.pyc
+
+# Ignore node_modules for Next.js
+node_modules/
+
+# Ignore build outputs
+.next/
+out/
+dist/
+
+# Ignore logs
+*.log
+
+# Ignore local data and credentials
+.env.local
+.env.*.local
+
+# Ignore the project checklist (contains sensitive info)
+PROJECT_CHECKLIST.md
