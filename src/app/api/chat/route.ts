@@ -29,8 +29,8 @@ Relationships (direction matters):
 
 Important query patterns:
 - To find top products by billing count: MATCH (b:BillingDocument)-[:CONTAINS_ITEM]->(p:Product) WITH p, COUNT(DISTINCT b) AS cnt ORDER BY cnt DESC RETURN p.id, cnt LIMIT 10
-- To trace a billing document full flow: MATCH (bd:BillingDocument {id: 'X'}) OPTIONAL MATCH (c:Customer)-[:BILLED_TO]->(bd) OPTIONAL MATCH (bd)-[:ACCOUNTED_IN]->(je:JournalEntry) OPTIONAL MATCH (dd:DeliveryDocument)-[:BILLED_IN]->(bd) OPTIONAL MATCH (so:SalesOrder)-[:GENERATES]->(dd) RETURN bd, c, je, dd, so
-- To find sales orders delivered but not billed: MATCH (so:SalesOrder)-[:GENERATES]->(dd:DeliveryDocument) WHERE NOT (dd)-[:BILLED_IN]->(:BillingDocument) RETURN so, dd LIMIT 50
+- To trace a billing document full flow (ALWAYS use this exact pattern, returning relationship variables so connections are visible): MATCH (bd:BillingDocument {id: 'X'}) OPTIONAL MATCH (dd:DeliveryDocument)-[r1:BILLED_IN]->(bd) OPTIONAL MATCH (so:SalesOrder)-[r2:GENERATES]->(dd) OPTIONAL MATCH (c:Customer)-[r3:PLACES]->(so) OPTIONAL MATCH (bd)-[r4:ACCOUNTED_IN]->(je:JournalEntry) RETURN bd, dd, r1, so, r2, c, r3, je, r4
+- To find sales orders delivered but not billed (ALWAYS return the relationship variable): MATCH (so:SalesOrder)-[r1:GENERATES]->(dd:DeliveryDocument) WHERE NOT (dd)-[:BILLED_IN]->(:BillingDocument) RETURN so, r1, dd LIMIT 50
 `;
 
 
@@ -47,13 +47,20 @@ export async function POST(req: Request) {
     // Build conversation context from recent history (last 5 exchanges)
     const recentHistory: { role: string; text: string }[] = Array.isArray(history) ? history.slice(-10) : [];
     const conversationContext = recentHistory.length > 1
-      ? '\nRecent conversation:\n' + recentHistory.slice(0, -1).map((m: { role: string; text: string }) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text.substring(0, 200)}`).join('\n') + '\n'
+      ? '\nRecent conversation:\n' + recentHistory.slice(0, -1).map((m: { role: string; text: string }) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${String(m.text ?? '').substring(0, 500)}`).join('\n') + '\n'
       : '';
 
-    // 1. GUARDRAIL CHECK
-    const guardrailPrompt = `You are a strict security guard. Determine if the user's input is related to querying a business database about orders, deliveries, billing, customers, or supply chain data. Answer STRICTLY with 'YES' or 'NO'. Do not say anything else.\nUser: ${message}`;
-    const isRelevant = (await geminiChat(guardrailPrompt, 'gemini-2.5-flash', 0)).toUpperCase();
-    if (!isRelevant.includes('YES')) {
+    // 1. GUARDRAIL CHECK — user input wrapped in delimiters to prevent prompt injection
+    const guardrailPrompt = `You are a strict security guard. Determine if the user's input (delimited below) is related to querying a business database about orders, deliveries, billing, customers, or supply chain data. Answer STRICTLY with only the single word YES or NO.
+<user_input>${message}</user_input>`;
+    let guardrailResponse: string;
+    try {
+      guardrailResponse = (await geminiChat(guardrailPrompt, 'gemini-2.5-flash', 0)).trim().toUpperCase();
+    } catch (e) {
+      console.error('Guardrail Gemini error:', e);
+      return NextResponse.json({ reply: 'The AI service is temporarily unavailable. Please try again in a moment.' }, { status: 503 });
+    }
+    if (!/^YES/.test(guardrailResponse)) {
       return NextResponse.json({
         reply: 'This system is designed to answer questions related to the provided dataset only.',
         nodes: [], links: []
@@ -69,18 +76,30 @@ RULES:
 - For aggregation/ranking queries: use WITH, COUNT(DISTINCT ...), ORDER BY, LIMIT.
 - For "not billed" or "not delivered" queries: use WHERE NOT (...)-[:REL]->(:Label) pattern.
 - For tracing a full document flow: use OPTIONAL MATCH to find all connected nodes.
-- For path tracing, RETURN individual nodes/relationships (not just RETURN path) so the frontend can render them.
+- CRITICAL: ALWAYS return relationship variables (e.g., -[r1:GENERATES]-> not just -[:GENERATES]->) so the frontend graph can render edges between nodes. Without relationship variables, the graph will show disconnected nodes.
+- For path tracing, RETURN individual nodes AND relationships (not just RETURN path) so the frontend can render them.
 - LIMIT results to 50 unless the query requires more.
 - Do not use apoc procedures.
 - If the user refers to something from previous conversation (e.g., "that customer", "those orders"), use the conversation context to resolve the reference.
 ${conversationContext}User: ${message}`;
-    let cypherQuery = await geminiChat(cypherPrompt, 'gemini-2.5-flash', 0);
+    let cypherQuery: string;
+    try {
+      cypherQuery = await geminiChat(cypherPrompt, 'gemini-2.5-flash', 0);
+    } catch (e) {
+      console.error('Cypher generation Gemini error:', e);
+      return NextResponse.json({ reply: 'The AI service is temporarily unavailable. Please try again in a moment.' }, { status: 503 });
+    }
     cypherQuery = cypherQuery.replace(/```cypher/gi, '').replace(/```/g, '').trim();
+    if (!cypherQuery) {
+      return NextResponse.json({ reply: 'I was unable to generate a query for that question. Please rephrase and try again.' });
+    }
 
-    // 2.5 READ-ONLY CYPHER ENFORCEMENT
-    const upperCypher = cypherQuery.toUpperCase();
-    const forbiddenKeywords = ['CREATE', 'DELETE', 'MERGE', 'SET ', 'REMOVE', 'DROP', 'DETACH', 'CALL APOC', 'FOREACH', 'LOAD CSV'];
-    const isMutating = forbiddenKeywords.some(kw => upperCypher.includes(kw));
+    // 2.5 READ-ONLY CYPHER ENFORCEMENT — word-boundary regex prevents bypass via SET\n, RESET, OFFSET, etc.
+    const forbiddenPatterns = [
+      /\bCREATE\b/, /\bDELETE\b/, /\bMERGE\b/, /\bSET\b/, /\bREMOVE\b/,
+      /\bDROP\b/, /\bDETACH\b/, /\bFOREACH\b/, /CALL\s+APOC/, /LOAD\s+CSV/,
+    ];
+    const isMutating = forbiddenPatterns.some(re => re.test(cypherQuery.toUpperCase()));
     if (isMutating) {
       return NextResponse.json({
         reply: 'The generated query was blocked because it attempted to modify the database. Only read-only queries are allowed.',
@@ -96,7 +115,7 @@ ${conversationContext}User: ${message}`;
     const links: { source: string; target: string; type: string }[] = [];
 
     try {
-      const result = await session.run(cypherQuery);
+      const result = await session.run(cypherQuery, {}, { timeout: 30000 });
 
       result.records.forEach(record => {
         const obj: any = {};
@@ -158,7 +177,14 @@ ${conversationContext}User: ${message}`;
     const nodes = Array.from(nodeMap.values());
 
     // 4. STREAMING NATURAL LANGUAGE SUMMARIZATION via SSE
-    const summaryPrompt = `You are a helpful data analyst. Answer the user's question using ONLY the provided database results. Be concise. If the database results are empty, say 'No matching records were found in the dataset.'
+    const summaryPrompt = `You are a helpful data analyst. Answer the user's question using ONLY the provided database results. If the database results are empty, say 'No matching records were found in the dataset.'
+IMPORTANT RULES:
+- For "full flow", "trace", or "path" questions: describe EVERY node in the chain. List each hop explicitly with its ID, e.g. Customer → SalesOrder → DeliveryDocument → BillingDocument → JournalEntry. Include all available IDs and key properties (amounts, dates, status, etc.).
+- For "delivered but not billed" or similar gap-analysis questions: list EVERY matching pair. For each result, show the Sales Order ID with its key properties (soldToParty, totalNetAmount, creationDate) AND the corresponding Delivery Document ID with its key properties (shippingPoint, delivery date).
+- For "top products" or ranking questions: list each result with its rank, ID, and count/value.
+- Never omit any entity from the results. Show ALL rows returned by the database.
+- Always mention entity IDs explicitly (e.g., Sales Order 740506, Delivery Document 80738091) so they can be highlighted on the graph.
+- Use bullet points or numbered lists for clarity.
 ${conversationContext}Question: ${message}
 Database Results: ${JSON.stringify(dbData).substring(0, 3000)}`;
 
@@ -196,7 +222,7 @@ Database Results: ${JSON.stringify(dbData).substring(0, 3000)}`;
         const highlightedIds: string[] = [];
         for (const node of nodes) {
           const entityId = String(node.properties?.id ?? '');
-          if (entityId && fullText.includes(entityId)) {
+          if (entityId && new RegExp(`\\b${entityId}\\b`).test(fullText)) {
             highlightedIds.push(node.id);
           }
         }
@@ -214,6 +240,6 @@ Database Results: ${JSON.stringify(dbData).substring(0, 3000)}`;
     });
   } catch (error) {
     console.error('API Error:', error);
-    return NextResponse.json({ reply: 'An error occurred while processing your request.', status: 500 });
+    return NextResponse.json({ reply: 'An error occurred while processing your request.' }, { status: 500 });
   }
 }

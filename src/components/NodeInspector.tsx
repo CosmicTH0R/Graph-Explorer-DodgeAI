@@ -26,7 +26,9 @@ export default function NodeInspector({ node, onClose }: NodeInspectorProps) {
         {Object.entries(node.properties).map(([k, v]) => (
           <div key={k} className="text-xs">
             <span className="text-slate-500">{k}: </span>
-            <span className="text-slate-200">{String(v)}</span>
+            <span className="text-slate-200 break-all">
+              {typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}
+            </span>
           </div>
         ))}
       </div>

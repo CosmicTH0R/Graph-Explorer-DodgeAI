@@ -1,17 +1,19 @@
 'use client';
 
 import { useRef, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { Message } from './types';
 
 interface ChatSidebarProps {
   messages: Message[];
   input: string;
   loading: boolean;
+  streaming?: boolean;
   onInputChange: (value: string) => void;
   onSend: () => void;
 }
 
-export default function ChatSidebar({ messages, input, loading, onInputChange, onSend }: ChatSidebarProps) {
+export default function ChatSidebar({ messages, input, loading, streaming, onInputChange, onSend }: ChatSidebarProps) {
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
@@ -40,7 +42,23 @@ export default function ChatSidebar({ messages, input, loading, onInputChange, o
                 ? 'ml-auto rounded-2xl rounded-br-sm bg-blue-600'
                 : 'mr-auto rounded-2xl rounded-bl-sm bg-slate-800'
             }`}>
-              {msg.text}
+              {msg.role === 'assistant' ? (
+                <div className="prose prose-sm prose-invert max-w-none
+                  [&>ol]:list-decimal [&>ol]:pl-4 [&>ol]:space-y-1
+                  [&>ul]:list-disc [&>ul]:pl-4 [&>ul]:space-y-1
+                  [&>p]:mb-1 [&>p:last-child]:mb-0
+                  [&_strong]:text-blue-300 [&_strong]:font-semibold
+                  [&_li]:text-slate-200">
+                  <ReactMarkdown>{msg.text}</ReactMarkdown>
+                  {streaming && i === messages.length - 1 && (
+                    <span className="animate-pulse ml-0.5">▌</span>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {msg.text}
+                </>
+              )}
             </div>
             {msg.rawQuery && (
               <details className="mt-1 ml-1">
@@ -52,7 +70,7 @@ export default function ChatSidebar({ messages, input, loading, onInputChange, o
             )}
           </div>
         ))}
-        {loading && (
+        {loading && !streaming && (
           <div className="text-gray-600 text-[13px] italic">Thinking…</div>
         )}
         <div ref={chatEndRef} />

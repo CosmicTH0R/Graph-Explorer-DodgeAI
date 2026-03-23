@@ -15,49 +15,79 @@ interface GraphCanvasProps {
 }
 
 export default function GraphCanvas({ graphData, selectedNodeId, highlightedIds, onNodeClick, onNodeRightClick }: GraphCanvasProps) {
+  const hasHighlights = highlightedIds.size > 0;
+
   const nodeCanvasObject = useCallback((node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
     const n = node as GraphNode;
-    const label  = n.label || 'Node';
-    const colour = LABEL_COLOURS[label] || defaultColour;
-    const radius = 8;
+    const label   = n.label || 'Node';
+    const colour  = LABEL_COLOURS[label] || defaultColour;
+    const radius  = 8;
     const fontSize = Math.max(10 / globalScale, 3);
     const isHighlighted = highlightedIds.has(n.id);
+    const isSelected    = selectedNodeId === n.id;
+    const isDimmed      = hasHighlights && !isHighlighted && !isSelected;
 
-    // Glow ring for highlighted (referenced) nodes
-    if (isHighlighted) {
-      ctx.beginPath();
-      ctx.arc(n.x ?? 0, n.y ?? 0, radius + 4, 0, 2 * Math.PI);
-      ctx.fillStyle = 'rgba(250, 204, 21, 0.25)';
-      ctx.fill();
-      ctx.strokeStyle = '#facc15';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-    }
+    // Dim non-highlighted nodes when a highlight set is active
+    ctx.globalAlpha = isDimmed ? 0.12 : 1;
 
+    // Node circle
     ctx.beginPath();
-    ctx.arc(n.x ?? 0, n.y ?? 0, radius, 0, 2 * Math.PI);
-    ctx.fillStyle = selectedNodeId === n.id ? '#ffffff' : colour;
+    ctx.arc(n.x ?? 0, n.y ?? 0, isHighlighted ? 10 : radius, 0, 2 * Math.PI);
+    ctx.fillStyle = isSelected ? '#ffffff' : colour;
     ctx.fill();
+
+    // Border
     ctx.strokeStyle = isHighlighted ? '#facc15' : colour;
-    ctx.lineWidth = isHighlighted ? 2 : 1.5;
+    ctx.lineWidth   = isHighlighted ? 2.5 : 1.5;
     ctx.stroke();
 
+    // Soft halo behind highlighted nodes
+    if (isHighlighted) {
+      ctx.beginPath();
+      ctx.arc(n.x ?? 0, n.y ?? 0, 14, 0, 2 * Math.PI);
+      ctx.fillStyle = colour + '33'; // 20% opacity halo using hex alpha
+      ctx.fill();
+    }
+
+    // Label
     ctx.font = `${fontSize}px sans-serif`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#fff';
+    ctx.fillStyle = isDimmed ? '#4b5563' : '#e2e8f0';
     ctx.fillText(
       String((n.properties as any)?.id ?? label),
       n.x ?? 0,
-      (n.y ?? 0) + radius + fontSize,
+      (n.y ?? 0) + (isHighlighted ? 12 : radius) + fontSize,
     );
-  }, [selectedNodeId, highlightedIds]);
+
+    ctx.globalAlpha = 1;
+  }, [selectedNodeId, highlightedIds, hasHighlights]);
+
+  const getLinkColor = useCallback((link: object) => {
+    if (!hasHighlights) return '#334155';
+    const l = link as any;
+    const src = typeof l.source === 'object' ? l.source?.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target?.id : l.target;
+    const srcHL = highlightedIds.has(src);
+    const tgtHL = highlightedIds.has(tgt);
+    if (srcHL && tgtHL) return '#60a5fa';  // both endpoints highlighted → bright blue
+    if (srcHL || tgtHL) return '#2d4a6b';  // one end highlighted → subtle blue
+    return '#1a2033';                       // not related → nearly invisible
+  }, [highlightedIds, hasHighlights]);
+
+  const getLinkWidth = useCallback((link: object) => {
+    if (!hasHighlights) return 1;
+    const l = link as any;
+    const src = typeof l.source === 'object' ? l.source?.id : l.source;
+    const tgt = typeof l.target === 'object' ? l.target?.id : l.target;
+    return (highlightedIds.has(src) && highlightedIds.has(tgt)) ? 2 : 1;
+  }, [highlightedIds, hasHighlights]);
 
   if (graphData.nodes.length === 0) {
     return (
       <div className="absolute inset-0 flex items-center justify-center flex-col text-[#2d2d4e]">
-        <div className="text-6xl mb-4">🕸️</div>
-        <p className="text-base">Graph will appear here after your first query</p>
+        <div className="w-8 h-8 border-2 border-[#2d2d4e] border-t-blue-500 rounded-full animate-spin mb-4" />
+        <p className="text-sm">Loading graph…</p>
       </div>
     );
   }
@@ -69,7 +99,8 @@ export default function GraphCanvas({ graphData, selectedNodeId, highlightedIds,
       nodeCanvasObject={nodeCanvasObject}
       nodeCanvasObjectMode={() => 'replace'}
       linkLabel={(link: any) => link.type}
-      linkColor={() => '#334155'}
+      linkColor={getLinkColor}
+      linkWidth={getLinkWidth}
       linkDirectionalArrowLength={6}
       linkDirectionalArrowRelPos={1}
       onNodeClick={(node: object) => onNodeClick(node as GraphNode)}

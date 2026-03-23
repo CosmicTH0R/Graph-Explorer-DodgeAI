@@ -24,6 +24,7 @@ export const LABEL_COLOURS: Record<string, string> = {
   DeliveryDocument: '#fbbf24',
   BillingDocument:  '#f87171',
   JournalEntry:     '#a78bfa',
+  Product:          '#f59e0b',
   Address:          '#f472b6',
 };
 
