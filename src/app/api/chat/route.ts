@@ -4,6 +4,52 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function compactValue(value: unknown, depth = 0): unknown {
+  if (value == null) return value;
+  if (Array.isArray(value)) return `[array:${value.length}]`;
+  if (typeof value === 'object') {
+    if (depth > 0) return '[object]';
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, compactValue(v, depth + 1)])
+    );
+  }
+  return value;
+}
+
+function compactRecord(record: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(record).map(([key, value]) => [key, compactValue(value)])
+  );
+}
+
+function getMentionCandidates(properties: Record<string, unknown>) {
+  const candidates = new Set<string>();
+
+  for (const [key, value] of Object.entries(properties)) {
+    if (value == null || Array.isArray(value) || typeof value === 'object') continue;
+    const text = String(value).trim();
+    if (!text) continue;
+
+    if (
+      key === 'id' ||
+      key === 'code' ||
+      key.endsWith('Id') ||
+      key.endsWith('Code') ||
+      key.endsWith('Document') ||
+      key === 'name' ||
+      /^[A-Z0-9_-]{4,}$/.test(text)
+    ) {
+      candidates.add(text);
+    }
+  }
+
+  return Array.from(candidates);
+}
+
 const DB_SCHEMA = `
 Node Labels and Key Properties:
 - Customer         (id)                      — a buyer/sold-to party
@@ -28,9 +74,11 @@ Relationships (direction matters):
 - (DeliveryDocument)-[:LOCATED_AT]->(Address)
 
 Important query patterns:
-- To find top products by billing count: MATCH (b:BillingDocument)-[:CONTAINS_ITEM]->(p:Product) WITH p, COUNT(DISTINCT b) AS cnt ORDER BY cnt DESC RETURN p.id, cnt LIMIT 10
+- To find top products by billing count: MATCH (b:BillingDocument)-[:CONTAINS_ITEM]->(p:Product) WITH p, COUNT(DISTINCT b) AS cnt ORDER BY cnt DESC RETURN p, cnt LIMIT 10
+- To count or rank orders per customer: MATCH (c:Customer)-[:PLACES]->(so:SalesOrder) WITH c, COUNT(DISTINCT so) AS cnt ORDER BY cnt DESC RETURN c, cnt LIMIT 10
 - To trace a billing document full flow (ALWAYS use this exact pattern, returning relationship variables so connections are visible): MATCH (bd:BillingDocument {id: 'X'}) OPTIONAL MATCH (dd:DeliveryDocument)-[r1:BILLED_IN]->(bd) OPTIONAL MATCH (so:SalesOrder)-[r2:GENERATES]->(dd) OPTIONAL MATCH (c:Customer)-[r3:PLACES]->(so) OPTIONAL MATCH (bd)-[r4:ACCOUNTED_IN]->(je:JournalEntry) RETURN bd, dd, r1, so, r2, c, r3, je, r4
 - To find sales orders delivered but not billed (ALWAYS return the relationship variable): MATCH (so:SalesOrder)-[r1:GENERATES]->(dd:DeliveryDocument) WHERE NOT (dd)-[:BILLED_IN]->(:BillingDocument) RETURN so, r1, dd LIMIT 50
+- To find which customer was billed or billing details per customer: MATCH (c:Customer)-[r1:BILLED_TO]->(bd:BillingDocument) RETURN c, r1, bd LIMIT 50
 `;
 
 
@@ -60,7 +108,7 @@ export async function POST(req: Request) {
       console.error('Guardrail Gemini error:', e);
       return NextResponse.json({ reply: 'The AI service is temporarily unavailable. Please try again in a moment.' }, { status: 503 });
     }
-    if (!/^YES/.test(guardrailResponse)) {
+    if (guardrailResponse !== 'YES') {
       return NextResponse.json({
         reply: 'This system is designed to answer questions related to the provided dataset only.',
         nodes: [], links: []
@@ -97,7 +145,7 @@ ${conversationContext}User: ${message}`;
     // 2.5 READ-ONLY CYPHER ENFORCEMENT — word-boundary regex prevents bypass via SET\n, RESET, OFFSET, etc.
     const forbiddenPatterns = [
       /\bCREATE\b/, /\bDELETE\b/, /\bMERGE\b/, /\bSET\b/, /\bREMOVE\b/,
-      /\bDROP\b/, /\bDETACH\b/, /\bFOREACH\b/, /CALL\s+APOC/, /LOAD\s+CSV/,
+      /\bDROP\b/, /\bDETACH\b/, /\bFOREACH\b/, /CALL\s+APOC/, /LOAD\s+CSV/, /CALL\s*\{/,
     ];
     const isMutating = forbiddenPatterns.some(re => re.test(cypherQuery.toUpperCase()));
     if (isMutating) {
@@ -175,6 +223,7 @@ ${conversationContext}User: ${message}`;
     }
 
     const nodes = Array.from(nodeMap.values());
+  const compactDbData = dbData.map((row) => compactRecord(row));
 
     // 4. STREAMING NATURAL LANGUAGE SUMMARIZATION via SSE
     const summaryPrompt = `You are a helpful data analyst. Answer the user's question using ONLY the provided database results. If the database results are empty, say 'No matching records were found in the dataset.'
@@ -186,7 +235,7 @@ IMPORTANT RULES:
 - Always mention entity IDs explicitly (e.g., Sales Order 740506, Delivery Document 80738091) so they can be highlighted on the graph.
 - Use bullet points or numbered lists for clarity.
 ${conversationContext}Question: ${message}
-Database Results: ${JSON.stringify(dbData).substring(0, 3000)}`;
+Database Results: ${JSON.stringify(compactDbData).substring(0, 12000)}`;
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -221,8 +270,8 @@ Database Results: ${JSON.stringify(dbData).substring(0, 3000)}`;
         // Compute highlighted IDs from the full answer
         const highlightedIds: string[] = [];
         for (const node of nodes) {
-          const entityId = String(node.properties?.id ?? '');
-          if (entityId && new RegExp(`\\b${entityId}\\b`).test(fullText)) {
+          const candidates = getMentionCandidates(node.properties);
+          if (candidates.some((candidate) => new RegExp(`\\b${escapeRegExp(candidate)}\\b`).test(fullText))) {
             highlightedIds.push(node.id);
           }
         }

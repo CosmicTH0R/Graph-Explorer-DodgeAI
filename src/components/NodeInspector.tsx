@@ -10,7 +10,7 @@ interface NodeInspectorProps {
 export default function NodeInspector({ node, onClose }: NodeInspectorProps) {
   return (
     <div className="absolute top-4 right-4 w-65 max-h-[calc(100vh-2rem)] flex flex-col bg-[#16213e]/95 rounded-xl border border-[#2d2d4e] backdrop-blur-sm">
-      <div className="flex justify-between items-center px-4 pt-4 pb-3 flex-shrink-0">
+      <div className="flex justify-between items-center px-4 pt-4 pb-3 shrink-0">
         <span
           className="text-xs font-bold px-2 py-0.5 rounded-md text-black"
           style={{ background: LABEL_COLOURS[node.label] || defaultColour }}
