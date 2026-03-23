@@ -2,7 +2,7 @@
 
 > **Live Demo:** [https://graph-explorer-dodge-ai.vercel.app/](https://graph-explorer-dodge-ai.vercel.app/)
 
-A full-stack application for exploring SAP supply chain data using natural language. Ask plain-English questions, get LLM-generated Cypher queries executed against Neo4j AuraDB, and watch the results rendered as an interactive force-directed graph — all in real time.
+A full-stack application for exploring SAP supply chain data using natural language. Ask plain-English questions, get LLM-generated Cypher queries executed live against Neo4j AuraDB, and watch results rendered as an interactive force-directed graph � in real time.
 
 ---
 
@@ -18,59 +18,66 @@ A full-stack application for exploring SAP supply chain data using natural langu
 8. [Local Development](#local-development)
 9. [ETL Setup](#etl-setup)
 10. [API Reference](#api-reference)
-11. [Deployment](#deployment)
+11. [Stress-Tested Queries](#stress-tested-queries)
+12. [Deployment](#deployment)
 
 ---
 
 ## Features
 
-- **Natural language to Cypher** — Ask questions like *"Which products appear in the most billing documents?"* and get an LLM-generated Cypher query executed live.
-- **Streaming responses** — Answers stream token-by-token via Server-Sent Events (SSE) using `generateContentStream()` for a real-time feel.
-- **Interactive graph visualization** — Results rendered with `react-force-graph-2d`; nodes are color-coded by label.
-- **Node expansion** — Right-click any node to fetch and merge its neighbors from Neo4j without resetting the graph.
-- **Node inspection** — Click any node to see all its properties in a floating panel.
-- **Highlighted references** — Nodes mentioned in the LLM answer are automatically outlined in yellow on the graph.
-- **Conversation memory** — Last 10 messages are sent as context so follow-up questions resolve correctly.
-- **Guardrail** — Off-topic queries are blocked before any Cypher is generated.
-- **Read-only enforcement** — Regex word-boundary checks block any mutating Cypher (`CREATE`, `DELETE`, `SET`, etc.).
-- **30-second query timeout** — Runaway Neo4j queries are automatically cancelled.
-- **7 node types fully colored** — Customer, SalesOrder, DeliveryDocument, BillingDocument, JournalEntry, Product, Address.
+- **Natural language to Cypher** � Ask *"Which products appear in the most billing documents?"* and receive a live-executed Cypher query with results.
+- **Streaming responses** � Answers stream token-by-token via Server-Sent Events using `generateContentStream()` for a real-time feel.
+- **Pre-loaded overview graph** � On page load, all non-Product nodes and their relationships are fetched automatically so the canvas is never blank.
+- **Interactive graph visualization** � Results rendered with `react-force-graph-2d`; nodes color-coded by label with a dynamic legend.
+- **Zoom-to-node** � Left-clicking a node centers and zooms to it (6� zoom, 600 ms animation).
+- **Node expansion** � Right-click any node to fetch and merge its direct neighbors from Neo4j without resetting the graph.
+- **Node inspection** � Click any node to view all its properties in a scrollable floating panel.
+- **Highlighted references** � Entity IDs mentioned in the LLM answer are automatically outlined in yellow on the graph.
+- **Markdown rendering** � LLM answers render with full Markdown (bold, lists, headings) via `react-markdown`.
+- **Conversation memory** � Last 10 messages sent as context so follow-up questions resolve correctly (e.g. *"what about that customer?"*).
+- **Guardrail** � Off-topic queries blocked before any Cypher is generated.
+- **Read-only enforcement** � Regex word-boundary checks block all mutating Cypher keywords.
+- **30-second query timeout** � Runaway Neo4j queries cancelled automatically.
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────┐
-│        Browser (Next.js)        │
-│  ChatSidebar  │  GraphCanvas    │
-│  NodeInspector│  Legend         │
-└──────────┬──────────────────────┘
-           │ POST /api/chat (SSE)
-           │ POST /api/expand
-┌──────────▼──────────────────────┐
-│      Next.js API Routes         │
-│  1. Guardrail (Gemini)          │
-│  2. Text-to-Cypher (Gemini)     │
-│  3. Read-only validation        │
-│  4. Neo4j execution (30s limit) │
-│  5. Streaming summarization     │
-│     (Gemini generateContentStream) │
-└──────────┬──────────────────────┘
-           │ Bolt / neo4j+s
-┌──────────▼──────────────────────┐
-│        Neo4j AuraDB             │
-│  7 node types · 11 rel types    │
-└─────────────────────────────────┘
++-----------------------------------------+
+�           Browser (Next.js)             �
+�  ChatSidebar  �  GraphCanvas            �
+�  NodeInspector�  Legend                 �
++-----------------------------------------+
+           � SSE  POST /api/chat
+           �      POST /api/expand
+           �      GET  /api/overview
++----------?------------------------------+
+�         Next.js API Routes              �
+�                                         �
+�  +- /api/chat ----------------------+   �
+�  � 1. Guardrail          (Gemini)   �   �
+�  � 2. Text-to-Cypher     (Gemini)   �   �
+�  � 3. Read-only check    (regex)    �   �
+�  � 4. Neo4j execution    (30s max)  �   �
+�  � 5. Streaming summary  (Gemini)   �   �
+�  +----------------------------------+   �
+�  /api/overview  � initial graph load    �
+�  /api/expand    � neighbor fetch        �
++-----------------------------------------+
+           � Bolt (neo4j+s://)
++----------?------------------------------+
+�           Neo4j AuraDB                  �
+�   7 node types � 11 relationship types  �
++-----------------------------------------+
 ```
-
-**Tech stack:**
 
 | Layer | Technology |
 |-------|-----------|
 | Frontend | Next.js 16 (React 19), Tailwind CSS v4 |
-| Graph rendering | react-force-graph-2d |
-| Backend | Next.js API Routes (Edge-compatible) |
+| Graph rendering | react-force-graph-2d 1.29 |
+| Markdown rendering | react-markdown |
+| Backend | Next.js API Routes |
 | LLM | Gemini 2.5 Flash (`@google/generative-ai`) |
 | Database | Neo4j AuraDB (neo4j-driver v6) |
 | Deployment | Vercel |
@@ -89,7 +96,7 @@ A full-stack application for exploring SAP supply chain data using natural langu
 | `BillingDocument` | `id`, `totalNetAmount`, `billingDocumentType`, `billingDocumentDate`, `soldToParty`, `accountingDocument` |
 | `JournalEntry` | `id`, `accountingDocumentType`, `postingDate`, `glAccount`, `amountInTransactionCurrency` |
 | `Product` | `id` (material number) |
-| `Address` | `id`, `type` (Plant/ShippingPoint/Location), `code`, `name` |
+| `Address` | `id`, `type` (Plant / ShippingPoint / Location), `code`, `name` |
 
 ### Relationships
 
@@ -107,39 +114,63 @@ A full-stack application for exploring SAP supply chain data using natural langu
 (BillingDocument)  -[:ACCOUNTED_IN]->   (JournalEntry)
 ```
 
-**Stats:** ~20,309 Product nodes, 14 Address nodes, 137 GENERATES edges, 245 BILLED_IN edges, 490 Address edges.
+**Database stats:** ~20,309 Product nodes � 14 Address nodes � 137 GENERATES edges � 245 BILLED_IN edges � 490 Address edges.
 
 ---
 
 ## LLM Pipeline
 
-Every user message goes through a three-stage pipeline in `src/app/api/chat/route.ts`:
+Every user message passes through a four-stage pipeline in `src/app/api/chat/route.ts`.
 
-### Stage 1 — Guardrail
+### Stage 1 � Guardrail
 ```
-Temperature: 0  |  Model: gemini-2.5-flash
+Model: gemini-2.5-flash    Temperature: 0
 ```
-User input is wrapped in `<user_input>…</user_input>` delimiters (prompt injection protection) and sent to Gemini with the question: *"Is this query related to business supply chain, orders, billing, or the provided dataset? Answer YES or NO."*
+User input is wrapped in `<user_input>�</user_input>` XML delimiters (prompt injection protection) and sent to Gemini with the instruction to return only `YES` or `NO`.
 
-- Response must be exactly `"YES"` (strict equality) — anything else blocks the query.
+- Strict equality check: `guardrailResponse !== 'YES'` � any deviation blocks the query.
+- On block: returns `"This system is designed to answer questions related to the provided dataset only."`
 
-### Stage 2 — Text-to-Cypher
+### Stage 2 � Text-to-Cypher
 ```
-Temperature: 0  |  Model: gemini-2.5-flash
+Model: gemini-2.5-flash    Temperature: 0
 ```
-The full DB schema + last 10 messages of conversation history are injected into the system prompt. Gemini returns a raw Cypher query. Before execution, a regex word-boundary check rejects any query containing `CREATE`, `DELETE`, `MERGE`, `SET`, `REMOVE`, `DROP`, `DETACH`, `FOREACH`, `LOAD CSV`, or `CALL APOC`.
+- Full DB schema (7 labels, 11 relationships, key property names) injected into the prompt.
+- Last 10 messages of conversation history included for follow-up resolution.
+- Curated pattern hints for common queries (flow tracing, ranking by count, gap analysis).
+- **CRITICAL rule enforced in prompt:** always return relationship variables (e.g. `-[r1:GENERATES]->`) so the frontend graph can render edges.
 
-### Stage 3 — Streaming Summarization
-```
-Temperature: 0.2  |  Model: gemini-2.5-flash  |  generateContentStream()
-```
-Raw Neo4j results (JSON) are passed to Gemini for natural-language summarization. The response streams back to the browser via SSE with three event types:
+### Stage 2.5 � Read-Only Enforcement
+Regex word-boundary patterns applied to the generated Cypher before execution:
 
-| Event | Payload | Purpose |
-|-------|---------|---------|
-| `meta` | `{ nodes, links, rawQuery }` | Graph data + Cypher query |
-| `token` | `"string chunk"` | Progressive text token |
-| `done` | `{ highlightedIds: string[] }` | Node IDs to highlight |
+```ts
+/\bCREATE\b/, /\bDELETE\b/, /\bMERGE\b/, /\bSET\b/, /\bREMOVE\b/,
+/\bDROP\b/, /\bDETACH\b/, /\bFOREACH\b/, /CALL\s+APOC/, /LOAD\s+CSV/, /CALL\s*\{/
+```
+
+Word-boundary matching prevents bypasses via `SET\n`, `RESET`, `OFFSET`, or subquery injection (`CALL {}`).
+
+### Stage 3 � Neo4j Execution
+- Query executed with a 30-second timeout.
+- Result records parsed for three value types:
+  - **Neo4j Node** ? extracted to `{ id, label, properties }`
+  - **Relationship** ? stored as `{ source, target, type }`
+  - **Path** ? segments unpacked into nodes + edges
+- Results compacted with depth-aware `compactRecord()`: top-level property maps preserved in full; nested objects/arrays replaced with `[object]` / `[array:N]` to save prompt tokens.
+
+### Stage 4 � Streaming Summarization
+```
+Model: gemini-2.5-flash    Temperature: 0.2    generateContentStream()
+```
+Compacted results (up to 12,000 chars) passed to Gemini for natural-language summarization. Response streams back via SSE:
+
+| SSE Event | Payload | Purpose |
+|-----------|---------|---------|
+| `meta` | `{ nodes, links, rawQuery }` | Graph data + raw Cypher sent first |
+| `token` | `"text chunk"` | Progressive answer tokens |
+| `done` | `{ highlightedIds: string[] }` | Node IDs to highlight on graph |
+
+Highlighted IDs are computed by matching every node's identifier-like properties (`id`, `code`, `name`, `*Id`, `*Code`, `*Document`, strong uppercase strings) against the full LLM answer using word-boundary regex.
 
 ---
 
@@ -147,13 +178,13 @@ Raw Neo4j results (JSON) are passed to Gemini for natural-language summarization
 
 | Concern | Mitigation |
 |---------|-----------|
-| Prompt injection | User input wrapped in `<user_input>` XML delimiters |
-| Guardrail bypass | Strict `!== 'YES'` equality check (not `.includes()`) |
-| Write operations | Regex word-boundary patterns (`\bSET\b`, `\bDROP\b`, etc.) |
-| Highlight false positives | Word-boundary regex prevents ID "123" matching "2123 units" |
-| Query hangs | 30-second timeout on all `session.run()` calls |
-| Label injection in expand | Allowlist of 7 known labels validated server-side |
-| SSE memory leaks | `AbortController` cancelled on component unmount |
+| Prompt injection | `<user_input>` XML delimiters isolate user content from system instructions |
+| Guardrail bypass | `guardrailResponse !== 'YES'` strict equality (not `.includes()`) |
+| Write operations | 11 regex word-boundary patterns covering all mutation keywords + `CALL {}` subqueries |
+| False-positive highlights | `escapeRegExp()` + `\b�\b` prevents ID "123" matching "2123 units" |
+| Query hangs | 30-second timeout on every `session.run()` call |
+| Label injection | Expand endpoint validates `label` against allowlist of 7 known types |
+| SSE memory leaks | `AbortController` cancelled on component unmount via `useEffect` cleanup |
 
 ---
 
@@ -161,38 +192,40 @@ Raw Neo4j results (JSON) are passed to Gemini for natural-language summarization
 
 ```
 graph-explorer/
-├── etl/
-│   ├── ingest.py              # Main ETL — nodes + relationships from JSONL
-│   └── ingest_addresses.py    # Address node ETL (Plant, ShippingPoint, Location)
-├── data/                      # Raw JSONL source files (49 files)
-├── src/
-│   ├── app/
-│   │   ├── page.tsx           # Main orchestrator (~180 lines, state + handlers)
-│   │   ├── layout.tsx
-│   │   └── api/
-│   │       ├── chat/
-│   │       │   └── route.ts   # 3-stage LLM pipeline + SSE streaming
-│   │       └── expand/
-│   │           └── route.ts   # Neighbor expansion API
-│   ├── components/
-│   │   ├── types.ts           # Shared interfaces + LABEL_COLOURS map
-│   │   ├── ChatSidebar.tsx    # Chat UI (messages, input, streaming cursor)
-│   │   ├── GraphCanvas.tsx    # Force-directed graph (react-force-graph-2d)
-│   │   ├── Legend.tsx         # Dynamic color legend
-│   │   └── NodeInspector.tsx  # Floating node property panel
-│   └── lib/
-│       └── neo4j.ts           # Neo4j driver singleton
-├── .env                       # Local secrets (not committed)
-├── package.json
-├── tsconfig.json
-└── README.md
++-- data/                          # Raw JSONL source files (49 files)
++-- etl/
+�   +-- ingest.py                  # Main ETL � nodes + relationships from JSONL
+�   +-- ingest_addresses.py        # Address node ETL (Plant, ShippingPoint, Location)
++-- src/
+�   +-- app/
+�   �   +-- layout.tsx
+�   �   +-- page.tsx               # Orchestrator � state, SSE handling, graph merge
+�   �   +-- api/
+�   �       +-- chat/
+�   �       �   +-- route.ts       # 4-stage LLM pipeline + SSE streaming
+�   �       +-- overview/
+�   �       �   +-- route.ts       # Initial graph load (all non-Product nodes)
+�   �       +-- expand/
+�   �           +-- route.ts       # Neighbor expansion (right-click)
+�   +-- components/
+�   �   +-- types.ts               # Shared interfaces + LABEL_COLOURS map
+�   �   +-- ChatSidebar.tsx        # Chat UI � messages, streaming cursor, Markdown
+�   �   +-- GraphCanvas.tsx        # Force-directed graph with zoom, highlight, dim
+�   �   +-- Legend.tsx             # Dynamic color legend + expanding indicator
+�   �   +-- NodeInspector.tsx      # Floating scrollable node property panel
+�   +-- lib/
+�       +-- neo4j.ts               # Neo4j driver singleton (process-exit cleanup)
++-- .env.example                   # Required env var template
++-- package.json
++-- tsconfig.json                  # TypeScript strict mode, path alias @/*
++-- README.md
 ```
 
 ---
 
 ## Environment Variables
 
-Create a `.env` file in the project root:
+Copy `.env.example` to `.env` and fill in your credentials:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
@@ -203,8 +236,8 @@ NEO4J_PASSWORD=your_neo4j_password_here
 
 | Variable | Description |
 |----------|-------------|
-| `GEMINI_API_KEY` | Google AI Studio API key — [get one here](https://aistudio.google.com/app/apikey) |
-| `NEO4J_URI` | AuraDB Bolt URI from your Neo4j console (`neo4j+s://…`) |
+| `GEMINI_API_KEY` | Google AI Studio API key � [get one here](https://aistudio.google.com/app/apikey) |
+| `NEO4J_URI` | AuraDB Bolt URI from your Neo4j console (`neo4j+s://�`) |
 | `NEO4J_USERNAME` | AuraDB username (default: `neo4j`) |
 | `NEO4J_PASSWORD` | AuraDB password set at instance creation |
 
@@ -223,15 +256,19 @@ cd graph-explorer
 npm install
 
 # 2. Set up environment
-cp .env.example .env   # then fill in your keys
+cp .env.example .env
+# Edit .env and fill in your API keys
 
-# 3. Run the dev server
+# 3. Start the dev server
 npm run dev
 # App available at http://localhost:3000
+```
 
-# Other scripts
-npm run build    # production build
-npm run start    # serve production build
+Other scripts:
+
+```bash
+npm run build    # Production build
+npm run start    # Serve production build locally
 npm run lint     # ESLint check
 ```
 
@@ -239,34 +276,51 @@ npm run lint     # ESLint check
 
 ## ETL Setup
 
-**Prerequisites:** Python 3.9+
+**Prerequisites:** Python 3.9+, Neo4j credentials in `.env`
 
 ```bash
-# 1. Create a virtual environment
+# 1. Create and activate a virtual environment
 python -m venv venv
-venv\Scripts\activate        # Windows
-# source venv/bin/activate   # macOS/Linux
+venv\Scripts\activate          # Windows
+# source venv/bin/activate     # macOS / Linux
 
 # 2. Install dependencies
 pip install pandas neo4j python-dotenv
 
-# 3. Ensure .env exists with Neo4j credentials (see above)
-
-# 4. Run the main ETL (nodes + relationships)
+# 3. Run the main ETL (nodes + relationships)
 python etl/ingest.py
-# Parses 49 JSONL files → ~1,398 entity nodes + 20,309 Product nodes
-# Creates all relationship types
+# Parses 49 JSONL files
+# Uploads ~1,398 entity nodes + 20,309 Product nodes
+# Creates all 11 relationship types
 
-# 5. Run the Address ETL
+# 4. Run the Address ETL
 python etl/ingest_addresses.py
-# Creates 14 Address nodes + 490 address-related edges
+# Creates 14 Address nodes (7 Plant, 5 ShippingPoint, 2 Location)
+# Creates 490 address-related edges
 ```
 
-The ETL scripts are idempotent — they use `MERGE` with unique constraints to prevent duplicate nodes on re-runs.
+Both scripts are idempotent � they use `MERGE` with unique constraints, so re-running them will not create duplicate nodes or relationships.
 
 ---
 
 ## API Reference
+
+### `GET /api/overview`
+
+Returns all non-Product nodes and their relationships for the initial graph load.
+
+**Response:**
+```json
+{
+  "nodes": [ { "id": "42", "label": "Customer", "properties": { "id": "320000083" } } ],
+  "links": [ { "source": "42", "target": "71", "type": "PLACES" } ]
+}
+```
+
+- Excludes Product nodes (20,309 � too many to load upfront).
+- Returns up to 400 nodes with a 20-second timeout.
+
+---
 
 ### `POST /api/chat`
 
@@ -277,8 +331,8 @@ Runs the full LLM pipeline and streams the response.
 {
   "message": "Which customers have the most sales orders?",
   "history": [
-    { "role": "user", "text": "Show me all customers" },
-    { "role": "assistant", "text": "Found 12 customers..." }
+    { "role": "user",      "text": "Show me all customers" },
+    { "role": "assistant", "text": "Found 12 customers in the dataset." }
   ]
 }
 ```
@@ -287,21 +341,23 @@ Runs the full LLM pipeline and streams the response.
 
 ```
 event: meta
-data: {"nodes":[...],"links":[...],"rawQuery":"MATCH (c:Customer)..."}
+data: {"nodes":[...],"links":[...],"rawQuery":"MATCH (c:Customer)-[r:PLACES]->(so:SalesOrder)..."}
 
 event: token
-data: "There are 12 customers"
+data: "The customer with the most orders is"
 
 event: token
-data: " in the dataset..."
+data: " 320000083 with 47 sales orders."
 
 event: done
 data: {"highlightedIds":["42","17"]}
 ```
 
-**Error response (JSON, non-streaming):**
+**Error responses (JSON, non-streaming):**
 ```json
 { "reply": "This system is designed to answer questions related to the provided dataset only." }
+{ "reply": "The generated query was blocked because it attempted to modify the database." }
+{ "reply": "I couldn't find the data for that query in the database.", "error": true }
 ```
 
 ---
@@ -322,8 +378,8 @@ Fetches all direct neighbors of a given node.
 ```json
 {
   "nodes": [
-    { "id": "123", "label": "SalesOrder", "properties": { "id": "740571", ... } },
-    { "id": "456", "label": "Customer",   "properties": { "id": "320000083" } }
+    { "id": "123", "label": "SalesOrder",  "properties": { "id": "740571", "totalNetAmount": 9802 } },
+    { "id": "456", "label": "Customer",    "properties": { "id": "320000083" } }
   ],
   "links": [
     { "source": "456", "target": "123", "type": "PLACES" }
@@ -331,22 +387,36 @@ Fetches all direct neighbors of a given node.
 }
 ```
 
-- Returns up to 50 neighbors (`LIMIT 50`).
-- `label` is validated against an allowlist of 7 known types; unknown labels return `400`.
+- Returns up to 50 neighbors (bidirectional relationship traversal).
+- `label` is validated against a server-side allowlist of 7 known types. Unknown labels return `HTTP 400`.
+
+---
+
+## Stress-Tested Queries
+
+The following queries were used to validate full-pipeline correctness:
+
+| Query | Expected Behavior |
+|-------|------------------|
+| *"Which products are associated with the highest number of billing documents?"* | Aggregates `CONTAINS_ITEM` edges, returns `Product` nodes ranked by billing count |
+| *"Trace the full flow of billing document 90504274."* | Returns chain: Customer 320000083 ? SalesOrder 740571 ? DeliveryDocument 80738091 ? BillingDocument 90504274 ? JournalEntry 9400000275 |
+| *"Identify sales orders that have delivered but not billed flows."* | Uses `WHERE NOT (dd)-[:BILLED_IN]->(:BillingDocument)` pattern, returns SO + DD pairs |
+| *"Write a poem about a supply chain."* | Blocked by guardrail � returns off-topic message |
+| *"Who is the president of the US?"* | Blocked by guardrail � returns off-topic message |
 
 ---
 
 ## Deployment
 
-The app is deployed on **Vercel** with automatic builds on `git push`.
+The app deploys automatically to **Vercel** on every push to `main`.
 
 **Live URL:** [https://graph-explorer-dodge-ai.vercel.app/](https://graph-explorer-dodge-ai.vercel.app/)
 
-Set the same four environment variables (`GEMINI_API_KEY`, `NEO4J_URI`, `NEO4J_USERNAME`, `NEO4J_PASSWORD`) in your Vercel project settings under **Settings → Environment Variables**.
+Set the four environment variables in your Vercel project under **Settings ? Environment Variables** (same names as in `.env`).
 
 ---
 
 ## Acknowledgments
 
-Built for the Forward Deployed Engineer (FDE) assignment.
+Built for the Forward Deployed Engineer (FDE) assignment.  
 Powered by **Neo4j AuraDB**, **Gemini 2.5 Flash**, **Next.js 16**, **React 19**, and **Tailwind CSS v4**.
