@@ -150,6 +150,12 @@ export default function Home() {
 
   const handleNodeClick = useCallback((node: GraphNode) => {
     setSelectedNode(node);
+    setHighlightedIds(new Set([node.id]));
+  }, []);
+
+  const handleBackgroundClick = useCallback(() => {
+    setSelectedNode(null);
+    setHighlightedIds(new Set());
   }, []);
 
   const handleNodeRightClick = useCallback(async (node: GraphNode) => {
@@ -179,6 +185,11 @@ export default function Home() {
             links: [...prev.links, ...newLinks],
           };
         });
+        // Highlight the expanded node + all its neighbors so they stay clearly visible
+        // and the relationships between them are bright (not dimmed)
+        const neighborIds = (data.nodes as GraphNode[]).map(n => n.id);
+        setHighlightedIds(new Set([node.id, ...neighborIds]));
+        setSelectedNode(node);
       }
     } catch {
       setExpandError('Could not expand node. Please try again.');
@@ -206,6 +217,7 @@ export default function Home() {
           highlightedIds={highlightedIds}
           onNodeClick={handleNodeClick}
           onNodeRightClick={handleNodeRightClick}
+          onBackgroundClick={handleBackgroundClick}
         />
         <Legend expanding={expanding} />
         {expandError && (

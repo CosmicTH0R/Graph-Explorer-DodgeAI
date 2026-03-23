@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { GraphNode, GraphLink, LABEL_COLOURS, defaultColour } from './types';
 
@@ -12,9 +12,11 @@ interface GraphCanvasProps {
   highlightedIds: Set<string>;
   onNodeClick: (node: GraphNode) => void;
   onNodeRightClick: (node: GraphNode) => void;
+  onBackgroundClick?: () => void;
 }
 
-export default function GraphCanvas({ graphData, selectedNodeId, highlightedIds, onNodeClick, onNodeRightClick }: GraphCanvasProps) {
+export default function GraphCanvas({ graphData, selectedNodeId, highlightedIds, onNodeClick, onNodeRightClick, onBackgroundClick }: GraphCanvasProps) {
+  const fgRef = useRef<any>(null);
   const hasHighlights = highlightedIds.size > 0;
 
   const nodeCanvasObject = useCallback((node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
@@ -103,8 +105,17 @@ export default function GraphCanvas({ graphData, selectedNodeId, highlightedIds,
       linkWidth={getLinkWidth}
       linkDirectionalArrowLength={6}
       linkDirectionalArrowRelPos={1}
-      onNodeClick={(node: object) => onNodeClick(node as GraphNode)}
+      ref={fgRef}
+      onNodeClick={(node: object) => {
+        const n = node as GraphNode;
+        if (fgRef.current) {
+          fgRef.current.centerAt(n.x ?? 0, n.y ?? 0, 600);
+          fgRef.current.zoom(6, 600);
+        }
+        onNodeClick(n);
+      }}
       onNodeRightClick={(node: object) => onNodeRightClick(node as GraphNode)}
+      onBackgroundClick={onBackgroundClick}
       backgroundColor="#0f0f1a"
     />
   );

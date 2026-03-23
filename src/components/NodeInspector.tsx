@@ -9,8 +9,8 @@ interface NodeInspectorProps {
 
 export default function NodeInspector({ node, onClose }: NodeInspectorProps) {
   return (
-    <div className="absolute top-4 right-4 w-[260px] bg-[#16213e]/95 rounded-xl p-4 border border-[#2d2d4e] backdrop-blur-sm">
-      <div className="flex justify-between items-center mb-3">
+    <div className="absolute top-4 right-4 w-65 max-h-[calc(100vh-2rem)] flex flex-col bg-[#16213e]/95 rounded-xl border border-[#2d2d4e] backdrop-blur-sm">
+      <div className="flex justify-between items-center px-4 pt-4 pb-3 flex-shrink-0">
         <span
           className="text-xs font-bold px-2 py-0.5 rounded-md text-black"
           style={{ background: LABEL_COLOURS[node.label] || defaultColour }}
@@ -22,7 +22,7 @@ export default function NodeInspector({ node, onClose }: NodeInspectorProps) {
           className="bg-transparent border-none text-slate-500 cursor-pointer text-base hover:text-slate-300"
         >×</button>
       </div>
-      <div className="flex flex-col gap-1.5">
+      <div className="flex flex-col gap-1.5 overflow-y-auto px-4 pb-4 scrollbar-thin scrollbar-thumb-[#2d2d4e]">
         {Object.entries(node.properties).map(([k, v]) => (
           <div key={k} className="text-xs">
             <span className="text-slate-500">{k}: </span>

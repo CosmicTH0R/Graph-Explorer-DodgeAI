@@ -19,7 +19,7 @@ export default function ChatSidebar({ messages, input, loading, streaming, onInp
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   return (
-    <div className="w-[380px] min-w-[320px] flex flex-col bg-[#1a1a2e] border-r border-[#2d2d4e]">
+    <div className="w-95 min-w-[320px] flex flex-col bg-[#1a1a2e] border-r border-[#2d2d4e]">
       {/* Header */}
       <div className="px-5 py-4 border-b border-[#2d2d4e] bg-[#16213e]">
         <h1 className="text-lg font-bold text-blue-400">🔍 Graph Explorer</h1>
