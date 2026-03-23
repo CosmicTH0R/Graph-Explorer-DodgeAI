@@ -1,54 +1,9 @@
 import { NextResponse } from 'next/server';
 import { driver } from '@/lib/neo4j';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { escapeRegExp, compactRecord, getMentionCandidates, isMutatingCypher } from '@/lib/pipeline-utils';
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function compactValue(value: unknown, depth = 0): unknown {
-  if (value == null) return value;
-  if (Array.isArray(value)) return `[array:${value.length}]`;
-  if (typeof value === 'object') {
-    if (depth > 0) return '[object]';
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, compactValue(v, depth + 1)])
-    );
-  }
-  return value;
-}
-
-function compactRecord(record: Record<string, unknown>) {
-  return Object.fromEntries(
-    Object.entries(record).map(([key, value]) => [key, compactValue(value)])
-  );
-}
-
-function getMentionCandidates(properties: Record<string, unknown>) {
-  const candidates = new Set<string>();
-
-  for (const [key, value] of Object.entries(properties)) {
-    if (value == null || Array.isArray(value) || typeof value === 'object') continue;
-    const text = String(value).trim();
-    if (!text) continue;
-
-    if (
-      key === 'id' ||
-      key === 'code' ||
-      key.endsWith('Id') ||
-      key.endsWith('Code') ||
-      key.endsWith('Document') ||
-      key === 'name' ||
-      /^[A-Z0-9_-]{4,}$/.test(text)
-    ) {
-      candidates.add(text);
-    }
-  }
-
-  return Array.from(candidates);
-}
 
 const DB_SCHEMA = `
 Node Labels and Key Properties:
@@ -143,12 +98,7 @@ ${conversationContext}User: ${message}`;
     }
 
     // 2.5 READ-ONLY CYPHER ENFORCEMENT — word-boundary regex prevents bypass via SET\n, RESET, OFFSET, etc.
-    const forbiddenPatterns = [
-      /\bCREATE\b/, /\bDELETE\b/, /\bMERGE\b/, /\bSET\b/, /\bREMOVE\b/,
-      /\bDROP\b/, /\bDETACH\b/, /\bFOREACH\b/, /CALL\s+APOC/, /LOAD\s+CSV/, /CALL\s*\{/,
-    ];
-    const isMutating = forbiddenPatterns.some(re => re.test(cypherQuery.toUpperCase()));
-    if (isMutating) {
+    if (isMutatingCypher(cypherQuery)) {
       return NextResponse.json({
         reply: 'The generated query was blocked because it attempted to modify the database. Only read-only queries are allowed.',
         nodes: [], links: []
