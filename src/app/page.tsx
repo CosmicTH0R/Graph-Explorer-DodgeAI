@@ -1,53 +1,20 @@
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
-import dynamic from 'next/dynamic';
+import { useState, useCallback } from 'react';
+import ChatSidebar from '@/components/ChatSidebar';
+import GraphCanvas from '@/components/GraphCanvas';
+import Legend from '@/components/Legend';
+import NodeInspector from '@/components/NodeInspector';
+import { GraphNode, GraphLink, Message } from '@/components/types';
 
-// Load ForceGraph only on client side (no SSR) — it uses browser APIs
-const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), { ssr: false });
-
-// ─── Types ───────────────────────────────────────────────────────────────────
-interface GraphNode {
-  id: string;
-  label: string;
-  properties: Record<string, unknown>;
-  x?: number;
-  y?: number;
-}
-
-interface GraphLink {
-  source: string;
-  target: string;
-  type: string;
-}
-
-interface Message {
-  role: 'user' | 'assistant';
-  text: string;
-  rawQuery?: string;
-}
-
-// Label colours
-const LABEL_COLOURS: Record<string, string> = {
-  Customer:         '#60a5fa',
-  SalesOrder:       '#34d399',
-  DeliveryDocument: '#fbbf24',
-  BillingDocument:  '#f87171',
-  JournalEntry:     '#a78bfa',
-};
-const defaultColour = '#94a3b8';
-
-// ─── Component ───────────────────────────────────────────────────────────────
 export default function Home() {
   const [messages, setMessages]       = useState<Message[]>([]);
   const [input, setInput]             = useState('');
   const [loading, setLoading]         = useState(false);
   const [graphData, setGraphData]     = useState<{ nodes: GraphNode[]; links: GraphLink[] }>({ nodes: [], links: [] });
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-
-  // Auto-scroll chat to bottom
-  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+  const [expanding, setExpanding]       = useState(false);
+  const [highlightedIds, setHighlightedIds] = useState<Set<string>>(new Set());
 
   const sendMessage = async () => {
     const text = input.trim();
@@ -56,17 +23,77 @@ export default function Home() {
     setLoading(true);
     setMessages(prev => [...prev, { role: 'user', text }]);
 
+    const recentHistory = [...messages, { role: 'user' as const, text }]
+      .slice(-10)
+      .map(m => ({ role: m.role, text: m.text }));
+
     try {
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ message: text, history: recentHistory }),
       });
-      const data = await res.json();
-      setMessages(prev => [...prev, { role: 'assistant', text: data.reply, rawQuery: data.rawQuery }]);
-      if (data.nodes?.length) {
-        setGraphData({ nodes: data.nodes, links: data.links || [] });
-        setSelectedNode(null);
+
+      const contentType = res.headers.get('content-type') || '';
+
+      if (contentType.includes('text/event-stream')) {
+        // --- SSE streaming path ---
+        let rawQuery: string | undefined;
+        let assistantText = '';
+        // Add a placeholder assistant message that we'll update progressively
+        setMessages(prev => [...prev, { role: 'assistant', text: '' }]);
+
+        const reader = res.body!.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          // Process complete SSE events in the buffer
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || ''; // keep incomplete last chunk
+
+          for (const part of parts) {
+            const eventMatch = part.match(/^event:\s*(.+)$/m);
+            const dataMatch = part.match(/^data:\s*(.+)$/m);
+            if (!eventMatch || !dataMatch) continue;
+            const eventType = eventMatch[1].trim();
+            const payload = dataMatch[1];
+
+            if (eventType === 'meta') {
+              const meta = JSON.parse(payload);
+              rawQuery = meta.rawQuery;
+              if (meta.nodes?.length) {
+                setGraphData({ nodes: meta.nodes, links: meta.links || [] });
+                setSelectedNode(null);
+              }
+            } else if (eventType === 'token') {
+              assistantText += JSON.parse(payload);
+              const updatedText = assistantText;
+              const updatedQuery = rawQuery;
+              setMessages(prev => {
+                const copy = [...prev];
+                copy[copy.length - 1] = { role: 'assistant', text: updatedText, rawQuery: updatedQuery };
+                return copy;
+              });
+            } else if (eventType === 'done') {
+              const { highlightedIds: ids } = JSON.parse(payload);
+              setHighlightedIds(new Set<string>(ids || []));
+            }
+          }
+        }
+      } else {
+        // --- JSON fallback path (blocked queries, errors) ---
+        const data = await res.json();
+        setMessages(prev => [...prev, { role: 'assistant', text: data.reply, rawQuery: data.rawQuery }]);
+        if (data.nodes?.length) {
+          setGraphData({ nodes: data.nodes, links: data.links || [] });
+          setSelectedNode(null);
+        }
+        setHighlightedIds(new Set<string>(data.highlightedIds || []));
       }
     } catch {
       setMessages(prev => [...prev, { role: 'assistant', text: 'Error contacting the server.' }]);
@@ -75,159 +102,64 @@ export default function Home() {
     }
   };
 
-  const handleNodeClick = useCallback((node: object) => {
-    setSelectedNode(node as GraphNode);
+  const handleNodeClick = useCallback((node: GraphNode) => {
+    setSelectedNode(node);
   }, []);
 
-  const nodeCanvasObject = useCallback((node: object, ctx: CanvasRenderingContext2D, globalScale: number) => {
-    const n = node as GraphNode;
-    const label  = n.label || 'Node';
-    const colour = LABEL_COLOURS[label] || defaultColour;
-    const radius = 8;
-    const fontSize = Math.max(10 / globalScale, 3);
-
-    ctx.beginPath();
-    ctx.arc(n.x ?? 0, n.y ?? 0, radius, 0, 2 * Math.PI);
-    ctx.fillStyle = selectedNode?.id === n.id ? '#ffffff' : colour;
-    ctx.fill();
-    ctx.strokeStyle = colour;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    ctx.font = `${fontSize}px sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#fff';
-    ctx.fillText(
-      String((n.properties as any)?.id ?? label),
-      n.x ?? 0,
-      (n.y ?? 0) + radius + fontSize,
-    );
-  }, [selectedNode]);
+  const handleNodeRightClick = useCallback(async (node: GraphNode) => {
+    const nodeId = (node.properties as any)?.id;
+    if (!nodeId || !node.label || expanding) return;
+    setExpanding(true);
+    try {
+      const res = await fetch('/api/expand', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodeId: String(nodeId), label: node.label }),
+      });
+      const data = await res.json();
+      if (data.nodes?.length) {
+        setGraphData(prev => {
+          const existingNodeIds = new Set(prev.nodes.map(n => n.id));
+          const existingLinkKeys = new Set(prev.links.map(l => `${typeof l.source === 'object' ? (l.source as any).id : l.source}-${l.type}-${typeof l.target === 'object' ? (l.target as any).id : l.target}`));
+          const newNodes = data.nodes.filter((n: GraphNode) => !existingNodeIds.has(n.id));
+          const newLinks = data.links.filter((l: GraphLink) => {
+            const key = `${l.source}-${l.type}-${l.target}`;
+            return !existingLinkKeys.has(key);
+          });
+          return {
+            nodes: [...prev.nodes, ...newNodes],
+            links: [...prev.links, ...newLinks],
+          };
+        });
+      }
+    } catch {
+      // silently ignore expand errors
+    } finally {
+      setExpanding(false);
+    }
+  }, [expanding]);
 
   return (
     <div className="flex h-screen overflow-hidden">
+      <ChatSidebar
+        messages={messages}
+        input={input}
+        loading={loading}
+        onInputChange={setInput}
+        onSend={sendMessage}
+      />
 
-      {/* ── Left: Chat Sidebar ─────────────────────────────────────── */}
-      <div className="w-[380px] min-w-[320px] flex flex-col bg-[#1a1a2e] border-r border-[#2d2d4e]">
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-[#2d2d4e] bg-[#16213e]">
-          <h1 className="text-lg font-bold text-blue-400">🔍 Graph Explorer</h1>
-          <p className="text-xs text-slate-500 mt-0.5">Ask questions about your Neo4j data</p>
-        </div>
-
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-3">
-          {messages.length === 0 && (
-            <div className="text-center text-gray-600 mt-10 leading-relaxed">
-              <div className="text-3xl mb-3">💬</div>
-              <p>Ask a question about the supply chain data.</p>
-              <p className="text-xs mt-2">e.g. &quot;Show me customer orders&quot;</p>
-            </div>
-          )}
-          {messages.map((msg, i) => (
-            <div key={i}>
-              <div className={`max-w-[90%] px-3.5 py-2.5 text-sm leading-relaxed text-slate-200 ${
-                msg.role === 'user'
-                  ? 'ml-auto rounded-2xl rounded-br-sm bg-blue-600'
-                  : 'mr-auto rounded-2xl rounded-bl-sm bg-slate-800'
-              }`}>
-                {msg.text}
-              </div>
-              {msg.rawQuery && (
-                <details className="mt-1 ml-1">
-                  <summary className="text-[11px] text-gray-600 cursor-pointer">View Cypher Query</summary>
-                  <pre className="text-[11px] text-slate-400 bg-[#0f172a] p-2 rounded-md mt-1 overflow-x-auto whitespace-pre-wrap">
-                    {msg.rawQuery}
-                  </pre>
-                </details>
-              )}
-            </div>
-          ))}
-          {loading && (
-            <div className="text-gray-600 text-[13px] italic">Thinking…</div>
-          )}
-          <div ref={chatEndRef} />
-        </div>
-
-        {/* Input */}
-        <div className="px-4 py-3 border-t border-[#2d2d4e] flex gap-2">
-          <input
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && sendMessage()}
-            placeholder="Ask about orders, billing…"
-            disabled={loading}
-            className="flex-1 px-3.5 py-2.5 rounded-[10px] border border-[#2d2d4e] bg-[#0f172a] text-slate-200 text-sm outline-none focus:border-blue-500 transition-colors"
-          />
-          <button
-            onClick={sendMessage}
-            disabled={loading || !input.trim()}
-            className={`px-4 py-2.5 rounded-[10px] border-none text-slate-200 text-sm font-semibold transition-colors ${
-              loading || !input.trim() ? 'bg-slate-800 cursor-default' : 'bg-blue-600 cursor-pointer hover:bg-blue-500'
-            }`}
-          >
-            Send
-          </button>
-        </div>
-      </div>
-
-      {/* ── Right: Graph + Node Inspector ──────────────────────────── */}
       <div className="flex-1 relative bg-[#0f0f1a] overflow-hidden">
-        {graphData.nodes.length === 0 ? (
-          <div className="absolute inset-0 flex items-center justify-center flex-col text-[#2d2d4e]">
-            <div className="text-6xl mb-4">🕸️</div>
-            <p className="text-base">Graph will appear here after your first query</p>
-          </div>
-        ) : (
-          <ForceGraph2D
-            graphData={graphData}
-            nodeId="id"
-            nodeCanvasObject={nodeCanvasObject}
-            nodeCanvasObjectMode={() => 'replace'}
-            linkLabel={(link: any) => link.type}
-            linkColor={() => '#334155'}
-            linkDirectionalArrowLength={6}
-            linkDirectionalArrowRelPos={1}
-            onNodeClick={handleNodeClick}
-            backgroundColor="#0f0f1a"
-          />
-        )}
-
-        {/* Legend */}
-        <div className="absolute top-4 left-4 bg-[#0f0f1a]/85 rounded-[10px] px-3.5 py-2.5 backdrop-blur-sm">
-          {Object.entries(LABEL_COLOURS).map(([label, colour]) => (
-            <div key={label} className="flex items-center gap-2 mb-1">
-              <div className="w-2.5 h-2.5 rounded-full" style={{ background: colour }} />
-              <span className="text-xs text-slate-400">{label}</span>
-            </div>
-          ))}
-        </div>
-
-        {/* Node Inspector Panel */}
+        <GraphCanvas
+          graphData={graphData}
+          selectedNodeId={selectedNode?.id ?? null}
+          highlightedIds={highlightedIds}
+          onNodeClick={handleNodeClick}
+          onNodeRightClick={handleNodeRightClick}
+        />
+        <Legend expanding={expanding} />
         {selectedNode && (
-          <div className="absolute top-4 right-4 w-[260px] bg-[#16213e]/95 rounded-xl p-4 border border-[#2d2d4e] backdrop-blur-sm">
-            <div className="flex justify-between items-center mb-3">
-              <span
-                className="text-xs font-bold px-2 py-0.5 rounded-md text-black"
-                style={{ background: LABEL_COLOURS[selectedNode.label] || defaultColour }}
-              >
-                {selectedNode.label}
-              </span>
-              <button
-                onClick={() => setSelectedNode(null)}
-                className="bg-transparent border-none text-slate-500 cursor-pointer text-base hover:text-slate-300"
-              >×</button>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              {Object.entries(selectedNode.properties).map(([k, v]) => (
-                <div key={k} className="text-xs">
-                  <span className="text-slate-500">{k}: </span>
-                  <span className="text-slate-200">{String(v)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+          <NodeInspector node={selectedNode} onClose={() => setSelectedNode(null)} />
         )}
       </div>
     </div>

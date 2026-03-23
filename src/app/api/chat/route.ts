@@ -12,6 +12,7 @@ Node Labels and Key Properties:
 - BillingDocument  (id, totalNetAmount, billingDocumentType, billingDocumentDate, billingDocumentIsCancelled, soldToParty, accountingDocument)
 - JournalEntry     (id, accountingDocumentType, postingDate, glAccount, amountInTransactionCurrency)
 - Product          (id)                      — a material/product (id = material number)
+- Address          (id, type, code, name)    — a physical location (Plant, ShippingPoint, or Location)
 
 Relationships (direction matters):
 - (Customer)-[:PLACES]->(SalesOrder)
@@ -21,6 +22,10 @@ Relationships (direction matters):
 - (BillingDocument)-[:ACCOUNTED_IN]->(JournalEntry)
 - (SalesOrder)-[:CONTAINS_ITEM]->(Product)
 - (BillingDocument)-[:CONTAINS_ITEM]->(Product)
+- (SalesOrder)-[:DELIVERS_TO]->(Address)
+- (SalesOrder)-[:SOURCED_FROM]->(Address)
+- (DeliveryDocument)-[:SHIPPED_FROM]->(Address)
+- (DeliveryDocument)-[:LOCATED_AT]->(Address)
 
 Important query patterns:
 - To find top products by billing count: MATCH (b:BillingDocument)-[:CONTAINS_ITEM]->(p:Product) WITH p, COUNT(DISTINCT b) AS cnt ORDER BY cnt DESC RETURN p.id, cnt LIMIT 10
@@ -37,7 +42,13 @@ async function geminiChat(prompt: string, model: string = 'gemini-2.5-flash', te
 
 export async function POST(req: Request) {
   try {
-    const { message } = await req.json();
+    const { message, history } = await req.json();
+
+    // Build conversation context from recent history (last 5 exchanges)
+    const recentHistory: { role: string; text: string }[] = Array.isArray(history) ? history.slice(-10) : [];
+    const conversationContext = recentHistory.length > 1
+      ? '\nRecent conversation:\n' + recentHistory.slice(0, -1).map((m: { role: string; text: string }) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.text.substring(0, 200)}`).join('\n') + '\n'
+      : '';
 
     // 1. GUARDRAIL CHECK
     const guardrailPrompt = `You are a strict security guard. Determine if the user's input is related to querying a business database about orders, deliveries, billing, customers, or supply chain data. Answer STRICTLY with 'YES' or 'NO'. Do not say anything else.\nUser: ${message}`;
@@ -61,9 +72,21 @@ RULES:
 - For path tracing, RETURN individual nodes/relationships (not just RETURN path) so the frontend can render them.
 - LIMIT results to 50 unless the query requires more.
 - Do not use apoc procedures.
-User: ${message}`;
+- If the user refers to something from previous conversation (e.g., "that customer", "those orders"), use the conversation context to resolve the reference.
+${conversationContext}User: ${message}`;
     let cypherQuery = await geminiChat(cypherPrompt, 'gemini-2.5-flash', 0);
     cypherQuery = cypherQuery.replace(/```cypher/gi, '').replace(/```/g, '').trim();
+
+    // 2.5 READ-ONLY CYPHER ENFORCEMENT
+    const upperCypher = cypherQuery.toUpperCase();
+    const forbiddenKeywords = ['CREATE', 'DELETE', 'MERGE', 'SET ', 'REMOVE', 'DROP', 'DETACH', 'CALL APOC', 'FOREACH', 'LOAD CSV'];
+    const isMutating = forbiddenKeywords.some(kw => upperCypher.includes(kw));
+    if (isMutating) {
+      return NextResponse.json({
+        reply: 'The generated query was blocked because it attempted to modify the database. Only read-only queries are allowed.',
+        nodes: [], links: []
+      });
+    }
 
     // 3. EXECUTE QUERY AGAINST NEO4J
     const session = driver.session();
@@ -134,11 +157,61 @@ User: ${message}`;
 
     const nodes = Array.from(nodeMap.values());
 
-    // 4. NATURAL LANGUAGE SUMMARIZATION
-    const summaryPrompt = `You are a helpful data analyst. Answer the user's question using ONLY the provided database results. Be concise. If the database results are empty, say 'No matching records were found in the dataset.'\nQuestion: ${message}\nDatabase Results: ${JSON.stringify(dbData).substring(0, 3000)}`;
-    const finalAnswer = await geminiChat(summaryPrompt, 'gemini-2.5-flash', 0.2) || 'Could not generate an answer.';
+    // 4. STREAMING NATURAL LANGUAGE SUMMARIZATION via SSE
+    const summaryPrompt = `You are a helpful data analyst. Answer the user's question using ONLY the provided database results. Be concise. If the database results are empty, say 'No matching records were found in the dataset.'
+${conversationContext}Question: ${message}
+Database Results: ${JSON.stringify(dbData).substring(0, 3000)}`;
 
-    return NextResponse.json({ reply: finalAnswer, rawQuery: cypherQuery, nodes, links });
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        // Send metadata (graph + query) first
+        const meta = JSON.stringify({ rawQuery: cypherQuery, nodes, links });
+        controller.enqueue(encoder.encode(`event: meta\ndata: ${meta}\n\n`));
+
+        // Stream summarization tokens
+        let fullText = '';
+        try {
+          const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+          const result = await model.generateContentStream({
+            contents: [{ role: 'user', parts: [{ text: summaryPrompt }] }],
+            generationConfig: { temperature: 0.2 },
+          });
+          for await (const chunk of result.stream) {
+            const text = chunk.text();
+            if (text) {
+              fullText += text;
+              controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify(text)}\n\n`));
+            }
+          }
+        } catch (e) {
+          console.error('Streaming error:', e);
+          if (!fullText) {
+            fullText = 'Could not generate an answer.';
+            controller.enqueue(encoder.encode(`event: token\ndata: ${JSON.stringify(fullText)}\n\n`));
+          }
+        }
+
+        // Compute highlighted IDs from the full answer
+        const highlightedIds: string[] = [];
+        for (const node of nodes) {
+          const entityId = String(node.properties?.id ?? '');
+          if (entityId && fullText.includes(entityId)) {
+            highlightedIds.push(node.id);
+          }
+        }
+        controller.enqueue(encoder.encode(`event: done\ndata: ${JSON.stringify({ highlightedIds })}\n\n`));
+        controller.close();
+      },
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    });
   } catch (error) {
     console.error('API Error:', error);
     return NextResponse.json({ reply: 'An error occurred while processing your request.', status: 500 });
